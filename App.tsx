@@ -5,6 +5,7 @@ import { SimulatorPage } from '@/components/SimulatorPage';
 import { ExperimentsPage } from '@/components/ExperimentsPage';
 import { ResultsPage } from '@/components/ResultsPage';
 import { DocumentationPage } from '@/components/DocumentationPage';
+import { CloudBackendPage } from '@/components/CloudBackendPage';
 import { useSimulation } from '@/hooks/useSimulation';
 
 function App() {
@@ -19,6 +20,7 @@ function App() {
         {currentPage === 'simulator' && <SimulatorPage sim={sim} />}
         {currentPage === 'experiments' && <ExperimentsPage sim={sim} onNavigate={setCurrentPage} />}
         {currentPage === 'results' && <ResultsPage sim={sim} onNavigate={setCurrentPage} />}
+        {currentPage === 'cloud' && <CloudBackendPage />}
         {currentPage === 'documentation' && <DocumentationPage />}
       </main>
     </div>

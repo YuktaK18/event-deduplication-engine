@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Exactly-Once Event De-duplication Engine - serverless backend.
+  Amazon API Gateway -> AWS Lambda -> Amazon DynamoDB, monitored with Amazon CloudWatch.
+
+# ---------------------------------------------------------------------------
+# Parameters: values you can change when you run "sam deploy".
+# ---------------------------------------------------------------------------
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+    Description: >
+      Website that is allowed to call this API from a browser (CORS).
+      Use '*' while developing, then your Netlify URL, e.g. https://my-site.netlify.app
+  RetentionHours:
+    Type: Number
+    Default: 24
+    MinValue: 1
+    MaxValue: 720
+    Description: How many hours an event ID is remembered for duplicate detection.
+
+# ---------------------------------------------------------------------------
+# Globals: settings shared by all three Lambda functions.
+# ---------------------------------------------------------------------------
+Globals:
+  Function:
+    Runtime: nodejs24.x          # If your SAM CLI is old and rejects this, change to nodejs22.x
+    Architectures:
+      - x86_64
+    MemorySize: 256
+    Timeout: 10
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref EventsTable
+        RETENTION_HOURS: !Ref RetentionHours
+
+Resources:
+  # -------------------------------------------------------------------------
+  # 1) Amazon DynamoDB - stores event IDs, duplicate counters and statistics.
+  #    One table, one key ("pk"). Items older than "expiresAt" are removed
+  #    automatically by DynamoDB's Time To Live (TTL) feature.
+  # -------------------------------------------------------------------------
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  # -------------------------------------------------------------------------
+  # 2) Amazon API Gateway (HTTP API) - the public front door for the frontend.
+  #    Routes are declared on the functions below (see "Events:").
+  # -------------------------------------------------------------------------
+  EventsHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+        MaxAge: 600
+      DefaultRouteSettings:          # protects the API from accidental floods
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      AccessLogSettings:             # one log line per request, stored in CloudWatch
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","requestTime":"$context.requestTime","method":"$context.httpMethod","route":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency","integrationError":"$context.integrationErrorMessage"}'
+
+  # -------------------------------------------------------------------------
+  # 3) AWS Lambda - three small functions sharing the code in src/.
+  #    Each function gets permission for ONLY this table (least privilege).
+  # -------------------------------------------------------------------------
+  SubmitEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: POST /events - validates an event and stores it atomically (new vs duplicate).
+      CodeUri: src/
+      Handler: handlers/submitEvent.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref SubmitEventLogGroup
+      Events:
+        SubmitEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref EventsHttpApi
+            Path: /events
+            Method: POST
+
+  GetStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: GET /stats - returns de-duplication statistics.
+      CodeUri: src/
+      Handler: handlers/getStats.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EventsTable
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref GetStatsLogGroup
+      Events:
+        GetStats:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref EventsHttpApi
+            Path: /stats
+            Method: GET
+
+  GetEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: GET /events/{eventId} - looks up one stored event.
+      CodeUri: src/
+      Handler: handlers/getEvent.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref EventsTable
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref GetEventLogGroup
+      Events:
+        GetEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref EventsHttpApi
+            Path: /events/{eventId}
+            Method: GET
+
+  # -------------------------------------------------------------------------
+  # 4) Amazon CloudWatch - log groups, an alarm and a dashboard.
+  # -------------------------------------------------------------------------
+  SubmitEventLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/submit-event'
+      RetentionInDays: 30
+
+  GetStatsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/get-stats'
+      RetentionInDays: 30
+
+  GetEventLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/get-event'
+      RetentionInDays: 30
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/${AWS::StackName}/api-access'
+      RetentionInDays: 30
+
+  # Rings (turns red in the console) when the Lambda code reports an unexpected error.
+  InternalErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The event processor hit an unexpected internal error.
+      Namespace: ExactlyOnce
+      MetricName: InternalErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-monitoring'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "New vs duplicate events (custom metrics)",
+                "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 60,
+                "metrics": [
+                  ["ExactlyOnce", "NewEvents"],
+                  ["ExactlyOnce", "DuplicateEvents"],
+                  ["ExactlyOnce", "InvalidRequests"],
+                  ["ExactlyOnce", "InternalErrors"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "API requests and errors",
+                "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 60,
+                "metrics": [
+                  ["AWS/ApiGateway", "Count", "ApiId", "${EventsHttpApi}"],
+                  ["AWS/ApiGateway", "4xx", "ApiId", "${EventsHttpApi}"],
+                  ["AWS/ApiGateway", "5xx", "ApiId", "${EventsHttpApi}"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda (submit event): invocations and errors",
+                "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 60,
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${SubmitEventFunction}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${SubmitEventFunction}"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda (submit event): duration in ms",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 60,
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${SubmitEventFunction}", { "stat": "Average" }],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${SubmitEventFunction}", { "stat": "p95" }]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "DynamoDB capacity used",
+                "region": "${AWS::Region}", "view": "timeSeries", "stat": "Sum", "period": 60,
+                "metrics": [
+                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${EventsTable}"],
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${EventsTable}"]
+                ]
+              }
+            },
+            {
+              "type": "log", "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "Recent errors and warnings (submit event)",
+                "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '${SubmitEventLogGroup}' | fields @timestamp, level, message, errorMessage | filter level = 'ERROR' or level = 'WARN' | sort @timestamp desc | limit 20"
+              }
+            }
+          ]
+        }
+
+# ---------------------------------------------------------------------------
+# Outputs: printed at the end of "sam deploy". Copy ApiBaseUrl into Netlify.
+# ---------------------------------------------------------------------------
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL of the API. Put this in Netlify as VITE_API_BASE_URL.
+    Value: !Sub 'https://${EventsHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  SubmitEventUrl:
+    Description: POST events here.
+    Value: !Sub 'https://${EventsHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/events'
+  StatsUrl:
+    Description: GET statistics here.
+    Value: !Sub 'https://${EventsHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/stats'
+  DynamoDBTableName:
+    Description: Table that stores event IDs and counters.
+    Value: !Ref EventsTable
+  DashboardUrl:
+    Description: CloudWatch dashboard for this project.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}-monitoring'

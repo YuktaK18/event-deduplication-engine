@@ -1,6 +1,6 @@
-import { LayoutDashboard, FlaskConical, Beaker, BarChart3, BookOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, FlaskConical, Beaker, BarChart3, BookOpen, ShieldCheck, Cloud } from 'lucide-react';
 
-export type PageId = 'overview' | 'simulator' | 'experiments' | 'results' | 'documentation';
+export type PageId = 'overview' | 'simulator' | 'experiments' | 'results' | 'cloud' | 'documentation';
 
 interface Props {
   currentPage: PageId;
@@ -12,6 +12,7 @@ const NAV_ITEMS: { id: PageId; label: string; icon: typeof LayoutDashboard }[] =
   { id: 'simulator', label: 'Simulator', icon: FlaskConical },
   { id: 'experiments', label: 'Experiments', icon: Beaker },
   { id: 'results', label: 'Results & Comparison', icon: BarChart3 },
+  { id: 'cloud', label: 'Cloud Backend', icon: Cloud },
   { id: 'documentation', label: 'Documentation', icon: BookOpen },
 ];
 
