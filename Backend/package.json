@@ -1,0 +1,16 @@
+{
+  "name": "exactly-once-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS SAM backend (API Gateway + Lambda + DynamoDB + CloudWatch) for the Exactly-Once Event De-duplication Engine",
+  "scripts": {
+    "start": "node scripts/local-server.js",
+    "test": "node --test",
+    "local": "node scripts/local-server.js",
+    "check:api": "node scripts/api-check.js",
+    "check:concurrency": "node scripts/concurrency-check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "exactly-once-backend-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lambda functions for the Exactly-Once Event De-duplication Engine. The AWS SDK is already included in the Lambda runtime, so there is nothing to install.",
+  "license": "UNLICENSED"
+}
