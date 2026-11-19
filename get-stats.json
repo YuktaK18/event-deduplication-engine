@@ -1,0 +1,10 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /stats",
+  "rawPath": "/prod/stats",
+  "requestContext": {
+    "requestId": "sam-local-test-2",
+    "http": { "method": "GET", "path": "/prod/stats" }
+  },
+  "isBase64Encoded": false
+}

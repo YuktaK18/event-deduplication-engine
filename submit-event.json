@@ -1,0 +1,12 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /events",
+  "rawPath": "/prod/events",
+  "headers": { "content-type": "application/json" },
+  "requestContext": {
+    "requestId": "sam-local-test-1",
+    "http": { "method": "POST", "path": "/prod/events" }
+  },
+  "body": "{\"eventId\":\"evt-local-0001\",\"type\":\"payment\",\"payload\":\"$29.99\"}",
+  "isBase64Encoded": false
+}
